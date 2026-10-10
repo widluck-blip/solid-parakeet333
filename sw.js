@@ -1,4 +1,4 @@
-const CACHE = 'ritm-nedeli-v3';
+const CACHE = 'ritm-nedeli-v4';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
@@ -13,12 +13,31 @@ self.addEventListener('activate', (e) => {
   );
 });
 
+function withTimeout(p, ms) {
+  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+}
+
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   const isFont = url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com';
   if (url.origin !== location.origin && !isFont) return;
+
+  // страница: сначала сеть (так обновления видны сразу), без сети из кэша
+  if (req.mode === 'navigate') {
+    e.respondWith(
+      withTimeout(fetch(req), 4000)
+        .then((res) => {
+          if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
+          return res;
+        })
+        .catch(() => caches.match(req).then((hit) => hit || caches.match('./index.html')))
+    );
+    return;
+  }
+
+  // остальное: из кэша, а свежая копия подтягивается в фоне
   e.respondWith(
     caches.match(req).then((hit) => {
       const net = fetch(req).then((res) => {
@@ -27,8 +46,18 @@ self.addEventListener('fetch', (e) => {
           caches.open(CACHE).then((c) => c.put(req, copy));
         }
         return res;
-      }).catch(() => hit || (req.mode === 'navigate' ? caches.match('./index.html') : undefined));
+      }).catch(() => hit);
       return hit || net;
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      for (const c of list) { if ('focus' in c) return c.focus(); }
+      if (self.clients.openWindow) return self.clients.openWindow('./');
     })
   );
 });
